@@ -1,14 +1,25 @@
 # environment
 .env
+.env.*
+!.env.example
 
 # python
 __pycache__/
 *.pyc
 
-# virtualenv
+# virtualenv (incluye entornos alternativos como .venv312 durante la migracion de Fase 1)
+.venv/
+.venv*/
 venv/
+
+# testing / linting caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # logs
 *.log
+logs/
 
 .idea/
