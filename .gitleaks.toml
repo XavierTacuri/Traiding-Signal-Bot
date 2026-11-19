@@ -1,0 +1,27 @@
+# Configuración de Gitleaks para este repositorio.
+# Extiende el ruleset oficial (telegram-bot-api-token, gcp-api-key -formato
+# AIza... usado también por Google Gemini-, generic-api-key, etc.) sin
+# deshabilitar ninguna regla.
+title = "gitleaks-config bot_trading_fastapi"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exclusiones justificadas y específicas, nunca reglas completas"
+paths = [
+  # Entornos virtuales: nunca versionados (.gitignore), contienen metadatos de
+  # licencias de terceros (p. ej. scancode-licensedb-index.json dentro de
+  # license-expression, una dependencia de pip-audit) con campos "license_key"
+  # que disparan generic-api-key por nombre+entropía. No son secretos.
+  '''\.venv.*/''',
+  '''__pycache__/''',
+  '''\.pytest_cache/''',
+  '''\.ruff_cache/''',
+]
+# Tokens evidentemente ficticios usados en pruebas automatizadas de regresión
+# de seguridad (ver test/test_integration.py, test/test_signal_service.py).
+# Nunca corresponden a una credencial real: todos contienen el literal "FAKE".
+regexes = [
+  '''\d{6,10}:[A-Za-z0-9_-]*FAKE[A-Za-z0-9_-]*''',
+]

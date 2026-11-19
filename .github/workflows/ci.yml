@@ -1,0 +1,93 @@
+name: CI
+
+# Política de versión de Python: se fija 3.12 (64 bits) porque es la versión
+# verificada en la Fase 1/2 con wheels oficiales de MetaTrader5, pandas y numpy.
+# Se sube de versión únicamente tras repetir esa verificación manual, no de forma
+# automática (por eso no se usa una matriz de versiones).
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Validación (Windows, Python 3.12 x64)
+    # Windows porque MetaTrader5 solo publica wheels para Windows; el terminal
+    # MT5 real NO se instala aquí (no es necesario: todas las pruebas usan un
+    # MetaTrader5 simulado y nunca abren una conexión real).
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      # Ninguna credencial real: las pruebas no envían mensajes de Telegram ni
+      # se conectan a MT5. No se definen secretos de Telegram/MT5/IA aquí.
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.12 (x64)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requeriments-dev-lock.txt
+
+      - name: Instalación reproducible de dependencias (prod + dev fijadas)
+        run: python -m pip install -r requeriments-dev-lock.txt
+
+      - name: pip check
+        run: python -m pip check
+
+      - name: Ruff (lint)
+        run: python -m ruff check .
+
+      - name: Pytest con cobertura
+        run: >
+          python -m pytest -q --cov=app --cov=backtesting
+          --cov-report=term-missing --cov-report=xml --cov-branch
+
+      - name: Publicar reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 14
+
+      - name: compileall
+        run: python -m compileall -q app backtesting test main.py
+
+      - name: pip-audit (vulnerabilidades de dependencias)
+        run: python -m pip_audit
+
+  secrets:
+    name: Detección de secretos (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (historial completo para escanear commits del push/PR)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # Sin licencia: modo gratuito (suficiente para repos públicos/personales).
+          # Nunca se define aquí ningún token real de Telegram/MT5/IA.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_ENABLE_SUMMARY: "true"

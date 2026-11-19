@@ -40,28 +40,50 @@ Las versiones exactas y reproducibles de todo el árbol de dependencias (directa
 
 Complete `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en `.env`. Las credenciales de la cuenta MT5 no se almacenan en este proyecto: la librería usa la sesión configurada en la terminal. Nunca confirme `.env` en Git.
 
-> **Nota de configuración:** algunos archivos `.env` heredados de versiones anteriores pueden contener las variables `TIMEFRAME` y `PAIRS`. Ninguna de las dos corresponde a un campo real de `Settings` (los nombres correctos son `LOWER_TIMEFRAME`/`HIGHER_TIMEFRAME` y `FOREX_PAIRS`) y `pydantic-settings` las descarta silenciosamente sin advertencia. Si su `.env` las tiene, elimínelas o renómbrelas para evitar confusión; la corrección funcional de esta inconsistencia se abordará en la Fase 2.
+> **Nota de configuración:** algunos archivos `.env` heredados de versiones anteriores pueden contener las variables `TIMEFRAME` y `PAIRS`. Ninguna de las dos corresponde a un campo real de `Settings` (los nombres correctos son `LOWER_TIMEFRAME`/`HIGHER_TIMEFRAME` y `FOREX_PAIRS`). Desde la Fase 2, el arranque **falla explícitamente** si detecta cualquiera de las dos en su `.env` o en el entorno del sistema, con un mensaje que indica el campo correcto a usar — elimínelas o renómbrelas antes de ejecutar el bot.
 
 Los timestamps epoch de MT5 se interpretan como UTC, que es el contrato de la API de MT5. `MT5_TIMEZONE`, `SYSTEM_TIMEZONE` y `TRADING_TIMEZONE` hacen explícita la conversión; cambie `TRADING_TIMEZONE` por un nombre IANA válido si opera otra sesión. Ajuste la sesión y rollover conforme al servidor y broker, validándolo primero en demo.
 
 ## Configuración
 
-Todos los parámetros viven en `app/core/config.py` y pueden sobrescribirse con las variables descritas en `.env.example`. Solicite al menos 250 barras H1; el valor por defecto es 300. No se incluyen ajustes arbitrarios por par.
+Todos los parámetros viven en `app/core/config.py` y pueden sobrescribirse con las variables descritas en `.env.example`, organizado por categorías (general, MetaTrader 5, Telegram, pares, temporalidades, indicadores, filtros de estrategia). Solicite al menos 250 barras H1; el valor por defecto es 300. No se incluyen ajustes arbitrarios por par.
+
+`Settings` valida de forma estricta y falla rápido al arrancar: temporalidades y pares autorizados, ausencia de duplicados, lista de pares no vacía, relación entre EMA rápida/lenta, rango de ADX, umbrales RSI coherentes entre sí, rangos de SL/TP y riesgo/beneficio, umbral de score, zonas horarias IANA válidas, y consistencia del par `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ambos o ninguno). Ningún mensaje de error incluye valores de credenciales.
 
 El estado de setup e idempotencia usa repositorios en memoria porque la arquitectura actual es un solo proceso y no tiene base de datos. Se perderá al reiniciar. Las interfaces permiten sustituirlos por almacenamiento persistente si se despliega con múltiples procesos o se requiere continuidad entre reinicios.
 
 ## Tests y calidad
 
+Estos son los mismos comandos que ejecuta GitHub Actions (ver abajo); córralos localmente antes de subir cambios:
+
 ```powershell
+python -m pip install -r requeriments-dev-lock.txt
 python -m pip check
-python -m pytest -q
+python -m pytest -q --cov=app --cov=backtesting --cov-report=term-missing --cov-branch
 ruff check .
 python -m compileall -q app backtesting test main.py
+python -m pip_audit
 ```
 
-Las pruebas usan fixtures/mocks: no conectan a una cuenta MT5 real, no envían mensajes reales a Telegram y no ejecutan órdenes (hay pruebas dedicadas que verifican esto último de forma explícita, tanto para el worker como para el backtester). El repositorio no tiene configuración de mypy, Black, FastAPI, SQLAlchemy, Alembic ni Docker; por tanto no hay migraciones que aplicar. Comando de migración: **no aplica**.
+Las pruebas usan fixtures/mocks: no conectan a una cuenta MT5 real, no envían mensajes reales a Telegram y no ejecutan órdenes (hay pruebas estáticas y una dinámica dedicadas que verifican esto último, tanto para el worker como para el backtester). El repositorio no tiene configuración de mypy, Black, FastAPI, SQLAlchemy, Alembic ni Docker; por tanto no hay migraciones que aplicar. Comando de migración: **no aplica**.
+
+Detección preventiva de secretos ([Gitleaks](https://github.com/gitleaks/gitleaks), MIT, gratuito, binario local o GitHub Action):
+
+```powershell
+gitleaks git --redact -v .          # historial
+gitleaks dir --redact -v -c .gitleaks.toml .   # árbol de trabajo
+```
 
 Inteligencia artificial: `app/services/ai_service.py` existe únicamente como stub de compatibilidad, deshabilitado y no importado por ningún módulo activo. El bot no requiere ni utiliza ninguna clave de API de IA para generar señales.
+
+## Integración continua (GitHub Actions)
+
+`.github/workflows/ci.yml` se ejecuta en cada `push`, en los Pull Request hacia `main` y manualmente (`workflow_dispatch`). Tiene dos jobs:
+
+- **test** (Windows, Python 3.12 x64 — MetaTrader5 solo publica wheels para Windows): instala dependencias fijadas desde `requeriments-dev-lock.txt`, y corre `pip check`, Ruff, pytest con cobertura, `compileall` y `pip-audit`. No instala el terminal de MetaTrader 5 ni usa credenciales reales; todas las pruebas usan un MetaTrader5 simulado.
+- **secrets**: escanea el repositorio con Gitleaks en cada push/PR.
+
+No hay despliegue automático configurado; esta fase es exclusivamente integración continua.
 
 ## Backtesting
 
