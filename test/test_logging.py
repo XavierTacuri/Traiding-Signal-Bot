@@ -239,7 +239,7 @@ async def test_scan_once_lazily_constructs_signal_service(monkeypatch):
     constructed = []
 
     class FakeSignalService:
-        def __init__(self):
+        def __init__(self, **_kwargs):
             constructed.append(True)
 
         async def build_signal(self, pair):

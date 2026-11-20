@@ -88,6 +88,29 @@ class Settings(BaseSettings):
     ROLLOVER_BLOCK_START: time = time(21, 55)
     ROLLOVER_BLOCK_END: time = time(22, 15)
 
+    # ==============================
+    # MT5 — reconexión y timeouts (Fase 3)
+    # ==============================
+    # Backoff exponencial con jitter: 5s -> 10s -> 20s -> 40s -> 60s (tope), nunca
+    # instantáneo ni sin límite superior, para no martillar el terminal/broker
+    # durante una caída prolongada ni bloquear el event loop con reintentos.
+    MT5_RECONNECT_INITIAL_DELAY_SECONDS: PositiveFloat = 5.0
+    MT5_RECONNECT_MAX_DELAY_SECONDS: PositiveFloat = 60.0
+    MT5_RECONNECT_BACKOFF_MULTIPLIER: float = Field(default=2.0, gt=1.0)
+    # Límite de espera para initialize()/terminal_info() de conexión y para una
+    # consulta individual (symbol_info, copy_rates_*, symbol_info_tick). No cancela
+    # la llamada nativa bloqueada (ver app/services/mt5_connection.py); solo acota
+    # cuánto tiempo se espera antes de declarar la operación degradada.
+    MT5_CONNECT_TIMEOUT_SECONDS: PositiveFloat = 15.0
+    MT5_REQUEST_TIMEOUT_SECONDS: PositiveFloat = 10.0
+    # Antigüedad máxima aceptada del último tick (bid/ask) antes de rechazar una
+    # señal por datos obsoletos.
+    MT5_MAX_TICK_AGE_SECONDS: PositiveInt = 120
+    # Una vela cerrada se considera obsoleta si su cierre teórico quedó más atrás
+    # que (duración del timeframe * este múltiplo). >1 para tolerar latencia normal
+    # de publicación del broker sin confundirla con desconexión.
+    MT5_STALE_BAR_AGE_MULTIPLIER: float = Field(default=3.0, ge=1.0)
+
     @field_validator("FOREX_PAIRS")
     @classmethod
     def validate_forex_pairs(cls, pairs: list[str]) -> list[str]:
@@ -127,6 +150,11 @@ class Settings(BaseSettings):
         if bool(self.TELEGRAM_BOT_TOKEN) != bool(self.TELEGRAM_CHAT_ID):
             raise ValueError(
                 "TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID deben configurarse ambos o ninguno"
+            )
+        if self.MT5_RECONNECT_MAX_DELAY_SECONDS < self.MT5_RECONNECT_INITIAL_DELAY_SECONDS:
+            raise ValueError(
+                "MT5_RECONNECT_MAX_DELAY_SECONDS no puede ser menor que "
+                "MT5_RECONNECT_INITIAL_DELAY_SECONDS"
             )
         return self
 
