@@ -21,6 +21,11 @@ class SymbolSnapshot:
     ask: Decimal
     point: Decimal
     digits: int
+    # Timestamp of the tick this snapshot was built from, used only for the
+    # Fase 3 freshness check (app/services/market_data_validation.py). Optional
+    # and additive: real MT5 ticks always carry it, lightweight test doubles
+    # need not, and its absence simply skips that one check (fail open).
+    tick_time: datetime | None = None
 
     @property
     def spread(self) -> Decimal:
@@ -133,7 +138,9 @@ class MarketDataService:
         bid, ask = Decimal(str(tick.bid)), Decimal(str(tick.ask))
         if point <= 0 or bid <= 0 or ask <= 0 or ask < bid:
             raise RuntimeError(f"Datos bid/ask inválidos para {broker_symbol}")
-        return SymbolSnapshot(logical, broker_symbol, bid, ask, point, digits)
+        raw_time = getattr(tick, "time", None)
+        tick_time = datetime.fromtimestamp(raw_time, tz=UTC) if raw_time is not None else None
+        return SymbolSnapshot(logical, broker_symbol, bid, ask, point, digits, tick_time)
 
     def get_market_data(self, pair: str, timeframe: int, count: int = 200) -> pd.DataFrame:
         """Compatibility wrapper; still excludes the live candle."""

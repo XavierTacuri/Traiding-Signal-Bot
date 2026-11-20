@@ -107,6 +107,20 @@ def test_invalid_timezone_fails_fast():
         config(MT5_TIMEZONE="Not/AZone")
 
 
+def test_mt5_reconnect_max_delay_below_initial_delay_fails_fast():
+    with pytest.raises(ValidationError, match="MT5_RECONNECT_MAX_DELAY_SECONDS"):
+        config(MT5_RECONNECT_INITIAL_DELAY_SECONDS=30, MT5_RECONNECT_MAX_DELAY_SECONDS=10)
+
+
+def test_mt5_resilience_defaults_are_valid():
+    settings = config()
+    assert settings.MT5_RECONNECT_INITIAL_DELAY_SECONDS == 5.0
+    assert settings.MT5_RECONNECT_MAX_DELAY_SECONDS == 60.0
+    assert settings.MT5_RECONNECT_BACKOFF_MULTIPLIER == 2.0
+    assert settings.MT5_MAX_TICK_AGE_SECONDS == 120
+    assert settings.MT5_STALE_BAR_AGE_MULTIPLIER == 3.0
+
+
 def test_telegram_requires_both_fields_or_neither():
     config(TELEGRAM_BOT_TOKEN="", TELEGRAM_CHAT_ID="")  # neither: valid (e.g. backtesting)
     config(TELEGRAM_BOT_TOKEN="x", TELEGRAM_CHAT_ID="y")  # both: valid

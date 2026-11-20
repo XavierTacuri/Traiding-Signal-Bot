@@ -44,6 +44,16 @@ Complete `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en `.env`. Las credenciales d
 
 Los timestamps epoch de MT5 se interpretan como UTC, que es el contrato de la API de MT5. `MT5_TIMEZONE`, `SYSTEM_TIMEZONE` y `TRADING_TIMEZONE` hacen explícita la conversión; cambie `TRADING_TIMEZONE` por un nombre IANA válido si opera otra sesión. Ajuste la sesión y rollover conforme al servidor y broker, validándolo primero en demo.
 
+## Estabilidad y reconexión MT5 (Fase 3)
+
+`app/services/mt5_connection.py` centraliza el ciclo de vida de MetaTrader 5 en un `MT5ConnectionManager` con estados `DISCONNECTED/CONNECTING/CONNECTED/RECONNECTING/DEGRADED/STOPPING`. Toda llamada a MT5 (`initialize`, `shutdown`, `terminal_info`, `symbol_info`, `symbol_info_tick`, `copy_rates_*`) se serializa en un único hilo dedicado, así que `initialize`/`shutdown` nunca compiten con una lectura en curso y dos llamadas nativas nunca se ejecutan a la vez.
+
+- **Reconexión**: backoff exponencial con jitter (`MT5_RECONNECT_INITIAL_DELAY_SECONDS=5`, `MT5_RECONNECT_MAX_DELAY_SECONDS=60`, `MT5_RECONNECT_BACKOFF_MULTIPLIER=2`). El contador de fallos se reinicia tras una reconexión exitosa. Un error de configuración (credenciales/parámetros inválidos) se distingue de uno recuperable y detiene los reintentos en vez de insistir indefinidamente.
+- **Timeouts** (`MT5_CONNECT_TIMEOUT_SECONDS=15`, `MT5_REQUEST_TIMEOUT_SECONDS=10`): acotan cuánto se espera una respuesta, pero no cancelan la llamada nativa bloqueada (Python no puede interrumpir una extensión C en bloqueo) — superado el timeout, la conexión pasa a `DEGRADED` y no se emiten nuevas llamadas hasta que el hilo ocupado efectivamente retorne. La recuperación total de un bloqueo nativo real requiere el watchdog externo planificado para una fase posterior.
+- **Frescura de datos** (`MT5_MAX_TICK_AGE_SECONDS=120`, `MT5_STALE_BAR_AGE_MULTIPLIER=3.0`): antes de evaluar la estrategia se valida integridad OHLC, orden cronológico, ausencia de duplicados/valores no finitos, cantidad mínima de velas y antigüedad del tick/última vela cerrada. Estas validaciones se omiten durante el cierre de fin de semana estándar (viernes 21:00 UTC a domingo 21:00 UTC) para no confundir el cierre normal del mercado con una desconexión. Datos obsoletos o inválidos producen `HOLD` (nunca una señal con precios viejos) y el motivo queda en el log.
+- **Scanner**: `scan_once()` verifica la conexión antes de iterar los pares; si no hay conexión, suspende todo el ciclo sin tocar MT5 por par y sin busy-loop. Un error puntual en un par no detiene a los demás. Un error de configuración no recuperable detiene `run_scanner()` de forma controlada y diagnosticable.
+- **Apagado ordenado**: `main.py` instala manejadores para `SIGINT`/`SIGTERM`/`SIGBREAK` (en Windows solo Ctrl+C/SIGBREAK llegan de forma fiable; no hay entrega real de SIGTERM externo), cancela la tarea del scanner y llama `mt5.shutdown()` en un `finally`, liberando el hilo dedicado incluso si una llamada quedó bloqueada.
+
 ## Configuración
 
 Todos los parámetros viven en `app/core/config.py` y pueden sobrescribirse con las variables descritas en `.env.example`, organizado por categorías (general, MetaTrader 5, Telegram, pares, temporalidades, indicadores, filtros de estrategia). Solicite al menos 250 barras H1; el valor por defecto es 300. No se incluyen ajustes arbitrarios por par.

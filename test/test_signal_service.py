@@ -4,6 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings
+from app.services.market_data_validation import (
+    InvalidMarketDataError,
+    StaleMarketDataError,
+)
 from app.services.signal_service import SignalService
 
 
@@ -53,7 +57,11 @@ def service() -> SignalService:
     from app.services.market_data_service import MarketDataService
     config = Settings(_env_file=None)
     market = MarketDataService(FakeMT5(), initialize=False)
-    return SignalService(market_data_service=market, config=config)
+    # Fixed clock matching FakeMT5's bar baseline so the Fase 3 freshness
+    # validation (real last-bar age vs now) does not reject fixture data whose
+    # timestamps are anchored to 2026-01-01 regardless of when tests run.
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    return SignalService(market_data_service=market, config=config, clock=lambda: fixed_now)
 
 
 @pytest.mark.asyncio
@@ -73,6 +81,60 @@ async def test_build_signal_caches_already_analyzed_bar():
     assert second.signal_type == "HOLD"
     assert second.reason == "Vela M15 ya analizada"
     assert second.bar_time == first.bar_time
+
+
+@pytest.mark.asyncio
+async def test_build_signal_rejects_insufficient_historical_bars():
+    """Fase 3, section 7: fewer closed bars than configured must be rejected
+    before indicators/strategy ever run, instead of silently operating on a
+    truncated history."""
+    from app.services.market_data_service import MarketDataService
+    config = Settings(_env_file=None, LOWER_TIMEFRAME_BARS=400)  # FakeMT5 only has 300 M15 bars
+    market = MarketDataService(FakeMT5(), initialize=False)
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    instance = SignalService(market_data_service=market, config=config, clock=lambda: fixed_now)
+    with pytest.raises(InvalidMarketDataError, match="insuficientes"):
+        await instance.build_signal("EURUSD")
+
+
+@pytest.mark.asyncio
+async def test_build_signal_rejects_stale_closed_bars_on_a_normal_trading_day():
+    """Fase 3, section 7/8: data far older than tolerated must be rejected on
+    a weekday (not a weekend close), so a real disconnection never silently
+    produces a signal from old candles."""
+    from app.services.market_data_service import MarketDataService
+    config = Settings(_env_file=None)
+    market = MarketDataService(FakeMT5(), initialize=False)
+    # 2026-01-01 is a Thursday: ten hours later is still a normal trading day,
+    # yet far beyond the M15/H1 staleness tolerance for data anchored at 00:00.
+    stale_clock = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=10)
+    instance = SignalService(market_data_service=market, config=config, clock=lambda: stale_clock)
+    with pytest.raises(StaleMarketDataError):
+        await instance.build_signal("EURUSD")
+
+
+@pytest.mark.asyncio
+async def test_build_signal_routes_every_mt5_call_through_the_injected_connection_manager():
+    """Fase 3, section 5: SignalService must never call MT5 directly — every
+    blocking call is handed to the connection manager."""
+    from app.services.market_data_service import MarketDataService
+
+    class RecordingConnection:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def run(self, func, *args, timeout=None):
+            self.calls.append(getattr(func, "__name__", str(func)))
+            return func(*args)
+
+    config = Settings(_env_file=None)
+    market = MarketDataService(FakeMT5(), initialize=False)
+    connection = RecordingConnection()
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+    instance = SignalService(market_data_service=market, config=config,
+                              connection=connection, clock=lambda: fixed_now)
+    await instance.build_signal("EURUSD")
+    assert connection.calls == ["get_closed_bars", "get_closed_bars", "get_symbol_snapshot"]
 
 
 @pytest.mark.asyncio

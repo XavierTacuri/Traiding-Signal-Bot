@@ -5,6 +5,16 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.schemas.signal_schema import SignalSchema
 from app.services.correlation_service import CorrelationService
+from app.services.market_data_validation import (
+    InvalidMarketDataError,
+    StaleMarketDataError,
+)
+from app.services.mt5_connection import (
+    MT5BusyError,
+    MT5ConfigurationError,
+    MT5ConnectionError,
+    get_default_connection,
+)
 from app.services.notifier_service import NotifierService
 from app.services.signal_service import SignalService
 from app.services.state_service import InMemorySignalKeyRepository
@@ -14,6 +24,7 @@ notifier_service = NotifierService()
 correlation_service = CorrelationService()
 signal_keys = InMemorySignalKeyRepository()
 pending_notifications: dict[str, SignalSchema] = {}
+connection = get_default_connection()
 
 def format_signal(signal: SignalSchema) -> str:
     direction = "🟢 SEÑAL FOREX — BUY" if signal.signal_type == "BUY" else "🔴 SEÑAL FOREX — SELL"
@@ -30,8 +41,15 @@ def format_signal(signal: SignalSchema) -> str:
 
 async def scan_once() -> list[SignalSchema]:
     global signal_service
+    try:
+        await connection.ensure_connected()
+    except MT5ConfigurationError:
+        raise  # not recoverable by retrying; run_scanner stops the worker in a controlled way
+    except (MT5ConnectionError, MT5BusyError) as exc:
+        logger.warning("mt5_connection | ciclo de escaneo suspendido (sin conexión MT5): %s", exc)
+        return []
     if signal_service is None:
-        signal_service = SignalService()
+        signal_service = SignalService(connection=connection)
     candidates: list[SignalSchema] = list(pending_notifications.values())
     for pair in settings.FOREX_PAIRS:
         try:
@@ -43,6 +61,10 @@ async def scan_once() -> list[SignalSchema]:
                     logger.debug("%s | broker_symbol=%s", pair, signal.broker_symbol)
             else:
                 logger.info("%s | signal_hold | %s", pair, signal.reason)
+        except StaleMarketDataError as exc:
+            logger.info("%s | signal_rejected_stale_data | %s", pair, exc)
+        except InvalidMarketDataError as exc:
+            logger.info("%s | signal_rejected_invalid_data | %s", pair, exc)
         except (RuntimeError, ValueError, KeyError, TypeError):
             logger.exception("%s | scan_failed", pair)
         if settings.PAIR_DELAY_SECONDS:
@@ -70,5 +92,12 @@ async def scan_once() -> list[SignalSchema]:
 async def run_scanner() -> None:
     logger.info("Bot Forex iniciado. Escaneo por cierre M15 activado.")
     while True:
-        await scan_once()
+        try:
+            await scan_once()
+        except MT5ConfigurationError as exc:
+            logger.error(
+                "mt5_connection | configuración de MT5 no recuperable, el worker se detiene "
+                "de forma controlada (requiere intervención manual): %s", exc,
+            )
+            return
         await asyncio.sleep(settings.SCAN_INTERVAL_SECONDS)
