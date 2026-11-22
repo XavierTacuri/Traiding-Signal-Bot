@@ -50,6 +50,7 @@ class OutboxRepository(Protocol):
     async def due(self, now: datetime) -> list[OutboxItem]: ...
     async def mark_sent(self, item_id: int, sent_at: datetime) -> None: ...
     async def mark_failed(self, item_id: int, attempts: int, next_attempt_at: datetime, error: str) -> None: ...
+    async def count_pending_and_failed(self) -> tuple[int, int]: ...
 
 
 class SQLiteOutboxRepository:
@@ -160,3 +161,19 @@ class SQLiteOutboxRepository:
             "last_error = ? WHERE id = ?",
             (str(OutboxStatus.FAILED), attempts, _iso(next_attempt_at), error, item_id),
         )
+
+    async def count_pending_and_failed(self) -> tuple[int, int]:
+        """Read-only counts for observability (Fase 5 heartbeat/metrics) —
+        total rows per status regardless of ``next_attempt_at_utc``, unlike
+        ``due()`` which only returns items actionable right now."""
+        return await self._db.run(self._count_pending_and_failed_sync)
+
+    @staticmethod
+    def _count_pending_and_failed_sync(conn: sqlite3.Connection) -> tuple[int, int]:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM notification_outbox WHERE status = ?", (str(OutboxStatus.PENDING),),
+        ).fetchone()[0]
+        failed = conn.execute(
+            "SELECT COUNT(*) FROM notification_outbox WHERE status = ?", (str(OutboxStatus.FAILED),),
+        ).fetchone()[0]
+        return pending, failed

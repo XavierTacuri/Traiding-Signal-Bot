@@ -56,7 +56,13 @@ def _restore_handlers(snapshot: dict[int, object]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_cancels_the_scanner_and_shuts_down_mt5_on_sigint():
+async def test_run_cancels_the_scanner_and_shuts_down_mt5_on_sigint(monkeypatch):
+    """Fase 5: monitoring is disabled here (and the file handler stubbed
+    out) — this test is about signal/shutdown orchestration, not the
+    heartbeat, which has its own dedicated tests and needs a real Database
+    object, not this lightweight FakeDatabase."""
+    monkeypatch.setattr(main_module.settings, "MONITORING_ENABLED", False)
+    monkeypatch.setattr(main_module, "add_rotating_file_handler", lambda *a, **k: None)
     snapshot = _snapshot_handlers()
     fake_connection = FakeConnection()
     fake_database = FakeDatabase()
@@ -94,9 +100,12 @@ async def test_run_cancels_the_scanner_and_shuts_down_mt5_on_sigint():
 
 
 @pytest.mark.asyncio
-async def test_run_shuts_down_mt5_when_the_scanner_stops_on_its_own():
+async def test_run_shuts_down_mt5_when_the_scanner_stops_on_its_own(monkeypatch):
     """A controlled stop (e.g. MT5ConfigurationError inside run_scanner
-    returning instead of looping) must still release MT5 resources."""
+    returning instead of looping) must still release MT5 resources.
+    Fase 5: monitoring disabled, same reasoning as the test above."""
+    monkeypatch.setattr(main_module.settings, "MONITORING_ENABLED", False)
+    monkeypatch.setattr(main_module, "add_rotating_file_handler", lambda *a, **k: None)
     snapshot = _snapshot_handlers()
     fake_connection = FakeConnection()
     fake_database = FakeDatabase()

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.signal_record import NotificationType
+from app.monitoring.worker_state import runtime_state
 from app.repositories.database import get_default_database
 from app.repositories.outbox_repository import SQLiteOutboxRepository
 from app.repositories.setup_repository import SQLiteSetupRepository
@@ -93,6 +94,7 @@ async def _run_tracker_and_notify() -> None:
         return
     _last_tracker_run = now
     events = await tracker_service.evaluate_once()
+    runtime_state.tracker_ran(now, len(events))
     if not settings.SIGNAL_RESULT_NOTIFICATIONS_ENABLED:
         return
     for event in events:
@@ -131,6 +133,7 @@ async def scan_once() -> list[SignalSchema]:
         for pair in settings.FOREX_PAIRS:
             try:
                 signal = await signal_service.build_signal(pair)
+                runtime_state.mt5_read_ok(datetime.now(UTC))
                 if signal.signal_type in ("BUY", "SELL"):
                     candidates.append(signal)
                     logger.info("%s | signal_%s | score=%s", pair, signal.signal_type.lower(), signal.score)
@@ -139,8 +142,10 @@ async def scan_once() -> list[SignalSchema]:
                 else:
                     logger.info("%s | signal_hold | %s", pair, signal.reason)
             except StaleMarketDataError as exc:
+                runtime_state.signal_rejected()
                 logger.info("%s | signal_rejected_stale_data | %s", pair, exc)
             except InvalidMarketDataError as exc:
+                runtime_state.signal_rejected()
                 logger.info("%s | signal_rejected_invalid_data | %s", pair, exc)
             except (RuntimeError, ValueError, KeyError, TypeError):
                 logger.exception("%s | scan_failed", pair)
@@ -161,6 +166,7 @@ async def scan_once() -> list[SignalSchema]:
                 logger.info("%s | signal_duplicate", signal.pair)
                 continue
             newly_registered.append(signal)
+            runtime_state.signal_generated()
             logger.info("%s | signal_registered | score=%s", signal.pair, signal.score)
 
         await _run_tracker_and_notify()
@@ -179,14 +185,28 @@ async def scan_once() -> list[SignalSchema]:
 
 
 async def run_scanner() -> None:
+    """Fase 5, section 5: ``runtime_state.cycle_started/cycle_finished`` wrap
+    the exact same scan_once() call that always ran here — this is what
+    makes "last_cycle_finished_at" a genuine progress signal rather than a
+    second liveness ping: if scan_once() hangs (a stuck native MT5 call,
+    Fase 3's documented limitation), cycle_started was recorded but
+    cycle_finished never follows, even though HeartbeatService's own
+    independent task keeps ticking on schedule."""
     logger.info("Bot Forex iniciado. Escaneo por cierre M15 activado.")
     while True:
+        runtime_state.cycle_started(datetime.now(UTC))
         try:
             await scan_once()
         except MT5ConfigurationError as exc:
+            runtime_state.cycle_finished(datetime.now(UTC), success=False, error=str(exc))
             logger.error(
                 "mt5_connection | configuración de MT5 no recuperable, el worker se detiene "
                 "de forma controlada (requiere intervención manual): %s", exc,
             )
             return
+        except Exception as exc:
+            runtime_state.cycle_finished(datetime.now(UTC), success=False, error=str(exc))
+            raise
+        else:
+            runtime_state.cycle_finished(datetime.now(UTC), success=True)
         await asyncio.sleep(settings.SCAN_INTERVAL_SECONDS)
