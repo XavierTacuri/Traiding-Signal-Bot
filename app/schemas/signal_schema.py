@@ -23,3 +23,8 @@ class SignalSchema(BaseModel):
     rsi_m15: float | None = None
     signal_key: str | None = None
     broker_symbol: str | None = None
+    # Decimal digits of the broker quote (SymbolSnapshot.digits). Carried
+    # through purely so Fase 4's persistence layer can compute pip sizes
+    # correctly per symbol (app/services/tracking_calculations.py) without a
+    # second MT5 round trip; it plays no role in any strategy decision.
+    digits: int | None = None

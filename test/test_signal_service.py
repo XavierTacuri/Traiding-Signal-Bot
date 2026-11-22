@@ -153,7 +153,4 @@ async def test_full_scan_pipeline_never_calls_order_execution_on_mt5(monkeypatch
     monkeypatch.setattr(scanner, "notifier_service", FakeNotifier())
     monkeypatch.setattr(scanner, "settings", Settings(_env_file=None, FOREX_PAIRS="EURUSD,GBPUSD"))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: (candidates, []))
-    from app.services.state_service import InMemorySignalKeyRepository
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     await scanner.scan_once()  # would raise AssertionError via FakeMT5 if order execution occurred

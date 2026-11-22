@@ -19,10 +19,14 @@ from app.services.mt5_connection import (
     MT5ConfigurationError,
     MT5ConnectionError,
 )
-from app.services.state_service import InMemorySignalKeyRepository
 from app.workers import scanner
 
-BASE_SETTINGS = {"LOWER_TIMEFRAME": "M15", "PAIR_DELAY_SECONDS": 0, "MAX_CORRELATED_SIGNALS": 1}
+BASE_SETTINGS = {
+    "LOWER_TIMEFRAME": "M15", "PAIR_DELAY_SECONDS": 0, "MAX_CORRELATED_SIGNALS": 1,
+    # Fase 4: scan_once() reads these directly off `settings` every cycle.
+    "SIGNAL_TRACKING_ENABLED": True, "TRACKER_INTERVAL_SECONDS": 0,
+    "SIGNAL_RESULT_NOTIFICATIONS_ENABLED": True,
+}
 
 
 def _settings(pairs):
@@ -59,12 +63,9 @@ def _hold(pair: str) -> SignalSchema:
 @pytest.fixture(autouse=True)
 def _reset_scanner_state(monkeypatch):
     monkeypatch.setattr(scanner, "signal_service", None)
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: (candidates, []))
-    scanner.pending_notifications.clear()
     yield
     monkeypatch.setattr(scanner, "signal_service", None)
-    scanner.pending_notifications.clear()
 
 
 @pytest.mark.asyncio

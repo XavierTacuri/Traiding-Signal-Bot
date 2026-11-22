@@ -2,6 +2,7 @@ import asyncio
 import signal
 
 from app.core.logger import logger
+from app.repositories.database import get_default_database
 from app.services.mt5_connection import get_default_connection
 from app.workers.scanner import run_scanner
 
@@ -31,6 +32,13 @@ async def _run() -> None:
         except (ValueError, OSError):  # pragma: no cover - platform without this signal
             logger.debug("No se pudo instalar un manejador para %s en esta plataforma", signal_name)
 
+    # Fase 4: aplica migraciones y recupera setups/señales/outbox persistidos
+    # antes de aceptar el primer ciclo de escaneo. Un fallo aquí (esquema
+    # incompatible, disco inaccesible, archivo corrupto) debe detener el
+    # arranque en lugar de operar silenciosamente sin persistencia (section 20).
+    database = get_default_database()
+    await database.initialize()
+
     scanner_task = asyncio.create_task(run_scanner(), name="scanner")
     stop_wait_task = asyncio.create_task(stop_event.wait(), name="stop_wait")
     try:
@@ -47,6 +55,7 @@ async def _run() -> None:
         if not stop_wait_task.done():
             stop_wait_task.cancel()
         await get_default_connection().shutdown()
+        await database.close()
         logger.info("Recursos liberados. Apagado ordenado completado.")
 
 

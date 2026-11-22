@@ -111,6 +111,31 @@ class Settings(BaseSettings):
     # de publicación del broker sin confundirla con desconexión.
     MT5_STALE_BAR_AGE_MULTIPLIER: float = Field(default=3.0, ge=1.0)
 
+    # ==============================
+    # Persistencia y seguimiento virtual (Fase 4)
+    # ==============================
+    # Ruta del archivo SQLite local. Relativa al directorio de trabajo del
+    # proceso; nunca se versiona en Git (ver .gitignore).
+    DATABASE_PATH: str = "data/signals.db"
+    # Apaga únicamente el seguimiento virtual (activación + evaluación de
+    # TP/SL); el registro persistente de señales y la deduplicación siguen
+    # activos siempre, pues reemplazan el estado en memoria de la Fase 3.
+    SIGNAL_TRACKING_ENABLED: bool = True
+    # Nº de velas M15 que una señal puede esperar una cotización viva antes de
+    # expirar sin haberse activado virtualmente (p. ej. por una desconexión
+    # prolongada de MT5). Mismo orden de magnitud que SETUP_EXPIRATION_BARS,
+    # pero deliberadamente independiente: expira la señal ya confirmada, no
+    # el setup de la estrategia.
+    SIGNAL_EXPIRATION_BARS: PositiveInt = 4
+    # Intervalo mínimo entre pasadas del tracker; se evalúa dentro del mismo
+    # ciclo de escaneo (no se crea un segundo loop) y simplemente se omite la
+    # pasada si no ha transcurrido este tiempo desde la anterior.
+    TRACKER_INTERVAL_SECONDS: PositiveInt = 60
+    # Si es False, solo se notifica la señal nueva (comportamiento de Fase 3);
+    # los eventos de resultado (activación/TP/SL/expiración/ambiguo) no se
+    # encolan en el outbox.
+    SIGNAL_RESULT_NOTIFICATIONS_ENABLED: bool = True
+
     @field_validator("FOREX_PAIRS")
     @classmethod
     def validate_forex_pairs(cls, pairs: list[str]) -> list[str]:

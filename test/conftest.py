@@ -11,7 +11,31 @@ class _NoOpConnection:
 
 
 @pytest.fixture(autouse=True)
-def _fake_mt5_connection(monkeypatch):
+def _fake_mt5_connection(monkeypatch, tmp_path):
+    from app.repositories.database import Database
+    from app.repositories.outbox_repository import SQLiteOutboxRepository
+    from app.repositories.signal_repository import SQLiteSignalRepository
+    from app.services.signal_persistence_service import SignalPersistenceService
+    from app.services.signal_tracker_service import SignalTrackerService
     from app.workers import scanner
 
-    monkeypatch.setattr(scanner, "connection", _NoOpConnection())
+    connection = _NoOpConnection()
+    monkeypatch.setattr(scanner, "connection", connection)
+
+    # Fase 4: every test gets its own temporary SQLite file (never the
+    # production database at settings.DATABASE_PATH — brief section 17) and
+    # a fresh SignalService/tracker bound to it, mirroring the Fase 3
+    # connection reset below.
+    database = Database(tmp_path / "test_signals.db")
+    signal_repository = SQLiteSignalRepository(database)
+    outbox_repository = SQLiteOutboxRepository(database)
+    monkeypatch.setattr(scanner, "signal_service", None)
+    monkeypatch.setattr(scanner, "database", database)
+    monkeypatch.setattr(scanner, "signal_repository", signal_repository)
+    monkeypatch.setattr(scanner, "outbox_repository", outbox_repository)
+    monkeypatch.setattr(scanner, "persistence_service", SignalPersistenceService(outbox_repository))
+    monkeypatch.setattr(scanner, "tracker_service",
+                         SignalTrackerService(signal_repository=signal_repository, connection=connection))
+    monkeypatch.setattr(scanner, "_last_tracker_run", None)
+    yield
+    monkeypatch.setattr(scanner, "signal_service", None)
