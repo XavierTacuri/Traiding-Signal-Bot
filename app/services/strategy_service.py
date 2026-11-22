@@ -182,4 +182,4 @@ class StrategyService:
             risk_reward_ratio=Decimal(str(self.config.RISK_REWARD_RATIO)), confidence=score / 100,
             score=score, reason="Retroceso a EMA + recuperación de RSI + ruptura de estructura",
             bar_time=bar_time, setup_type=setup_type, adx_h1=higher_indicators["adx"],
-            rsi_m15=lower_indicators["rsi"], signal_key=signal_key)
+            rsi_m15=lower_indicators["rsi"], signal_key=signal_key, digits=symbol_snapshot.digits)

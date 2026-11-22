@@ -54,13 +54,28 @@ Los timestamps epoch de MT5 se interpretan como UTC, que es el contrato de la AP
 - **Scanner**: `scan_once()` verifica la conexión antes de iterar los pares; si no hay conexión, suspende todo el ciclo sin tocar MT5 por par y sin busy-loop. Un error puntual en un par no detiene a los demás. Un error de configuración no recuperable detiene `run_scanner()` de forma controlada y diagnosticable.
 - **Apagado ordenado**: `main.py` instala manejadores para `SIGINT`/`SIGTERM`/`SIGBREAK` (en Windows solo Ctrl+C/SIGBREAK llegan de forma fiable; no hay entrega real de SIGTERM externo), cancela la tarea del scanner y llama `mt5.shutdown()` en un `finally`, liberando el hilo dedicado incluso si una llamada quedó bloqueada.
 
+## Persistencia y seguimiento virtual de señales (Fase 4)
+
+El bot guarda su estado en un archivo SQLite local (`DATABASE_PATH`, por defecto `data/signals.db`; creado automáticamente, excluido de Git — no es un sistema de respaldo). Al iniciar, `main.py` aplica las migraciones pendientes (`app/repositories/migrations.py`, versionadas con `PRAGMA user_version`) y recupera setups pendientes vigentes, señales activas y notificaciones de Telegram todavía no entregadas; nada de esto reenvía señales ni reinterpreta resultados con datos futuros.
+
+- **Señales** (`app/repositories/signal_repository.py`): cada señal queda registrada con una clave única (`signal_key`) que impide duplicados tras un reinicio o un reescaneo — la restricción `UNIQUE` de SQLite es la garantía, no una comprobación en memoria.
+- **Outbox de Telegram** (`app/repositories/outbox_repository.py`, `app/services/outbox_service.py`): la señal y su primera notificación se registran en una sola transacción. El envío a Telegram ocurre después, fuera de esa transacción — SQLite y Telegram no pueden compartir una (no hay entrega exactamente una vez). Si Telegram falla, el mensaje queda pendiente con backoff y reintento; nunca se genera una segunda señal por ello. Riesgo residual documentado: si el proceso cae justo después de un envío exitoso pero antes de registrarlo, el reintento puede duplicar el mensaje de Telegram (no la señal).
+- **Seguimiento virtual** (`app/services/signal_tracker_service.py`, `SignalTrackerService`): nunca abre, cierra ni modifica operaciones ni consulta posiciones reales — solo lee velas y cotizaciones de MT5. Activa la señal (BUY con `ask`, SELL con `bid`) en la primera cotización viva y fresca que observa; evalúa TP/SL con los niveles originales de la estrategia sobre velas M15 cerradas. Si SL y TP caen dentro de la misma vela sin dato intravela, el resultado queda `AMBIGUOUS` — nunca se asume una operación ganadora por defecto. Estados: `PENDING_ACTIVATION`, `ACTIVE`, `TAKE_PROFIT`, `STOP_LOSS`, `EXPIRED`, `CANCELLED`, `AMBIGUOUS`.
+- **Pips y R** (`app/services/tracking_calculations.py`): el tamaño de pip depende de los decimales reales del símbolo (JPY y no-JPY), no de una tabla fija. El resultado en R usa el riesgo original (`|entrada − stop|`) definido al generar la señal, nunca recalculado. No se calculan ganancias en dinero: el bot no abre posiciones ni tiene volumen real.
+- **Estadísticas** (`app/services/statistics_service.py`): win rate, expectancy y profit factor solo consideran señales `TAKE_PROFIT`/`STOP_LOSS`; cuando no hay datos suficientes se muestra `N/D`, nunca un valor inventado. Señales pendientes, vencidas o ambiguas no se cuentan como ganancia ni pérdida.
+- **Notificaciones de resultado** (`SIGNAL_RESULT_NOTIFICATIONS_ENABLED`): opcionalmente informan activación/TP/SL/expiración/ambiguo, siempre etiquetadas SIMULADO/VIRTUAL.
+
+Nuevas variables (`.env.example`): `DATABASE_PATH`, `SIGNAL_TRACKING_ENABLED`, `SIGNAL_EXPIRATION_BARS`, `TRACKER_INTERVAL_SECONDS`, `SIGNAL_RESULT_NOTIFICATIONS_ENABLED`.
+
+El bot sigue sin ejecutar operaciones: no usa `order_send` ni equivalentes, no abre ni administra posiciones reales. Todo resultado es una simulación basada en datos de mercado observados, no una garantía de rentabilidad.
+
 ## Configuración
 
 Todos los parámetros viven en `app/core/config.py` y pueden sobrescribirse con las variables descritas en `.env.example`, organizado por categorías (general, MetaTrader 5, Telegram, pares, temporalidades, indicadores, filtros de estrategia). Solicite al menos 250 barras H1; el valor por defecto es 300. No se incluyen ajustes arbitrarios por par.
 
 `Settings` valida de forma estricta y falla rápido al arrancar: temporalidades y pares autorizados, ausencia de duplicados, lista de pares no vacía, relación entre EMA rápida/lenta, rango de ADX, umbrales RSI coherentes entre sí, rangos de SL/TP y riesgo/beneficio, umbral de score, zonas horarias IANA válidas, y consistencia del par `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` (ambos o ninguno). Ningún mensaje de error incluye valores de credenciales.
 
-El estado de setup e idempotencia usa repositorios en memoria porque la arquitectura actual es un solo proceso y no tiene base de datos. Se perderá al reiniciar. Las interfaces permiten sustituirlos por almacenamiento persistente si se despliega con múltiples procesos o se requiere continuidad entre reinicios.
+Desde la Fase 4, el estado de setups, señales y deduplicación se persiste en SQLite (ver sección siguiente) en vez de perderse al reiniciar. Las implementaciones en memoria (`InMemory*`) siguen existiendo y se usan en pruebas unitarias; la arquitectura sigue siendo de un solo proceso.
 
 ## Tests y calidad
 
@@ -160,9 +175,10 @@ Los resultados dependen de la calidad del histórico, spread, slippage omitido y
 
 ## Limitaciones y advertencia
 
-- La deduplicación y setups no sobreviven reinicios.
 - La correlación básica solo agrupa exposición USD equivalente; no estima correlaciones estadísticas móviles.
 - El backtester aporta el motor y métricas, pero requiere histórico de calidad y modelado realista de spread/slippage.
 - El proyecto es un worker de consola; pese al nombre histórico del repositorio, actualmente no expone endpoints FastAPI.
+- El seguimiento virtual depende de que MT5 entregue velas/cotizaciones; si no lo hace durante mucho tiempo, una señal activa puede quedar sin resolver indefinidamente (igual que un trade "OPEN" en el backtester). La recuperación ante un bloqueo nativo real de MT5 sigue dependiendo del watchdog externo planificado para una fase posterior — no implementado aún.
+- SQLite se usa como base de datos local de un solo proceso; no sustituye a un sistema de respaldo ni está pensado para múltiples procesos escribiendo a la vez.
 
 > Este software genera señales basadas en reglas técnicas. No garantiza resultados ni rentabilidad. Debe validarse mediante backtesting, pruebas fuera de muestra y cuenta demo antes de utilizarse en un entorno real.

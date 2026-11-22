@@ -7,10 +7,13 @@ import pytest
 
 from app.core.logger import HANDLER_MARKER, setup_logger
 from app.schemas.signal_schema import SignalSchema
-from app.services.state_service import InMemorySignalKeyRepository
 from app.workers import scanner
 
-BASE_SETTINGS = {"LOWER_TIMEFRAME": "M15", "PAIR_DELAY_SECONDS": 0, "MAX_CORRELATED_SIGNALS": 1}
+BASE_SETTINGS = {
+    "LOWER_TIMEFRAME": "M15", "PAIR_DELAY_SECONDS": 0, "MAX_CORRELATED_SIGNALS": 1,
+    "SIGNAL_TRACKING_ENABLED": True, "TRACKER_INTERVAL_SECONDS": 0,
+    "SIGNAL_RESULT_NOTIFICATIONS_ENABLED": True,
+}
 
 
 def rendered_calls(mock_method: Mock) -> list[str]:
@@ -56,12 +59,8 @@ async def test_scanner_logs_hold_buy_and_sell_with_logical_pair(monkeypatch):
     fake_logger = Mock()
     monkeypatch.setattr(scanner, "signal_service", SignalService())
     monkeypatch.setattr(scanner, "logger", fake_logger)
-    monkeypatch.setattr(scanner, "settings", SimpleNamespace(
-        FOREX_PAIRS=list(signals), LOWER_TIMEFRAME="M15", PAIR_DELAY_SECONDS=0,
-        MAX_CORRELATED_SIGNALS=1))
+    monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=list(signals), **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: ([], []))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     await scanner.scan_once()
     messages = rendered_calls(fake_logger.info)
     assert "EURUSD | signal_hold | Sin setup fuerte" in messages
@@ -78,11 +77,8 @@ async def test_scanner_exception_contains_pair(monkeypatch):
     fake_logger = Mock()
     monkeypatch.setattr(scanner, "signal_service", FailingSignalService())
     monkeypatch.setattr(scanner, "logger", fake_logger)
-    monkeypatch.setattr(scanner, "settings", SimpleNamespace(
-        FOREX_PAIRS=["USDCHF"], LOWER_TIMEFRAME="M15", PAIR_DELAY_SECONDS=0,
-        MAX_CORRELATED_SIGNALS=1))
+    monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=["USDCHF"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: ([], []))
-    scanner.pending_notifications.clear()
     await scanner.scan_once()
     assert rendered_calls(fake_logger.exception) == ["USDCHF | scan_failed"]
 
@@ -102,6 +98,7 @@ def test_format_signal_renders_buy_and_sell():
 @pytest.mark.asyncio
 async def test_scan_once_sends_selected_signal_and_marks_it_sent(monkeypatch):
     signal = SignalSchema(pair="EURUSD", signal_type="BUY", score=90, signal_key="k1",
+        entry="1.1000", stop_loss="1.0950", digits=5,
         broker_symbol="EURUSDm", adx_h1=25.0, rsi_m15=55.0, reason="setup")
 
     class FakeSignalService:
@@ -120,42 +117,47 @@ async def test_scan_once_sends_selected_signal_and_marks_it_sent(monkeypatch):
     monkeypatch.setattr(scanner, "logger", fake_logger)
     monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=["EURUSD"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: (candidates, []))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     sent = await scanner.scan_once()
     assert len(sent) == 1 and sent[0].signal_key == "k1"
     assert len(sent_messages) == 1
-    assert scanner.signal_keys.contains("k1")
-    assert "k1" not in scanner.pending_notifications
+    record = await scanner.signal_repository.get_by_key("k1")
+    assert record is not None and record.sent_at_utc is not None
     assert rendered_calls(fake_logger.debug) == ["EURUSD | broker_symbol=EURUSDm"]
 
 
 @pytest.mark.asyncio
 async def test_scan_once_skips_already_sent_duplicate(monkeypatch):
-    signal = SignalSchema(pair="EURUSD", signal_type="BUY", score=90, signal_key="dup")
+    """Fase 4: dedup now lives in the signals table (UNIQUE signal_key),
+    not an in-memory set — pre-register the key the way a prior cycle (or a
+    prior process, before a restart) would have."""
+    signal = SignalSchema(pair="EURUSD", signal_type="BUY", score=90, signal_key="dup",
+                           entry="1.1000", stop_loss="1.0950", digits=5,
+                           adx_h1=25.0, rsi_m15=55.0)
 
     class FakeSignalService:
         async def build_signal(self, pair):
             return signal
 
     fake_logger = Mock()
-    repository = InMemorySignalKeyRepository()
-    repository.mark_sent("dup", __import__("datetime").datetime.now())
     monkeypatch.setattr(scanner, "signal_service", FakeSignalService())
     monkeypatch.setattr(scanner, "logger", fake_logger)
     monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=["EURUSD"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: (candidates, []))
-    monkeypatch.setattr(scanner, "signal_keys", repository)
-    scanner.pending_notifications.clear()
+    await scanner.signal_repository.register(scanner.persistence_service.build_record(signal))
+
     sent = await scanner.scan_once()
+
     assert sent == []
     assert "EURUSD | signal_duplicate" in rendered_calls(fake_logger.info)
 
 
 @pytest.mark.asyncio
 async def test_scan_once_keeps_signal_pending_when_telegram_fails(monkeypatch):
+    """Fase 4, section 7: a Telegram failure must not create a second
+    trading signal, must not lose the signal, and must leave it retryable
+    (status FAILED in the persistent outbox) rather than "pending" in memory."""
     signal = SignalSchema(pair="EURUSD", signal_type="BUY", score=90, signal_key="retry-me",
-        adx_h1=25.0, rsi_m15=55.0)
+        entry="1.1000", stop_loss="1.0950", digits=5, adx_h1=25.0, rsi_m15=55.0)
 
     class FakeSignalService:
         async def build_signal(self, pair):
@@ -165,27 +167,32 @@ async def test_scan_once_keeps_signal_pending_when_telegram_fails(monkeypatch):
         async def send_telegram_message(self, text):
             raise RuntimeError("telegram down")
 
-    fake_logger = Mock()
     monkeypatch.setattr(scanner, "signal_service", FakeSignalService())
     monkeypatch.setattr(scanner, "notifier_service", FailingNotifier())
-    monkeypatch.setattr(scanner, "logger", fake_logger)
+    monkeypatch.setattr(scanner, "logger", Mock())
     monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=["EURUSD"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: (candidates, []))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
+
     sent = await scanner.scan_once()
+
     assert sent == []
-    assert "retry-me" in scanner.pending_notifications
-    assert rendered_calls(fake_logger.exception) == ["EURUSD | telegram_send_failed"]
-    scanner.pending_notifications.clear()
+    record = await scanner.signal_repository.get_by_key("retry-me")
+    assert record is not None and record.sent_at_utc is None
+    due = await scanner.outbox_repository.due(record.created_at_utc)
+    assert due == []  # backoff already pushed next_attempt_at_utc into the future
+
+    # Recovering on a later cycle (section 7 "al reiniciar... reintentar de
+    # manera segura") must not register a second signal for the same event.
+    second = await scanner.persistence_service.register_and_enqueue(signal, "irrelevant")
+    assert second is None
 
 
 @pytest.mark.asyncio
 async def test_scan_once_logs_correlation_rejections(monkeypatch):
     accepted = SignalSchema(pair="EURUSD", signal_type="BUY", score=90, signal_key="acc",
-        adx_h1=25.0, rsi_m15=55.0)
+        entry="1.1000", stop_loss="1.0950", digits=5, adx_h1=25.0, rsi_m15=55.0)
     rejected = SignalSchema(pair="GBPUSD", signal_type="BUY", score=80, signal_key="rej",
-        adx_h1=25.0, rsi_m15=55.0)
+        entry="1.3000", stop_loss="1.2950", digits=5, adx_h1=25.0, rsi_m15=55.0)
 
     class FakeSignalService:
         async def build_signal(self, pair):
@@ -203,8 +210,6 @@ async def test_scan_once_logs_correlation_rejections(monkeypatch):
         FOREX_PAIRS=["EURUSD", "GBPUSD"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter",
                          lambda candidates, maximum: ([accepted], [rejected]))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     await scanner.scan_once()
     assert "GBPUSD | signal_rejected_correlation | score=80" in rendered_calls(fake_logger.info)
 
@@ -224,11 +229,9 @@ async def test_scan_once_respects_pair_delay(monkeypatch):
     monkeypatch.setattr(scanner, "logger", Mock())
     monkeypatch.setattr(scanner.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(scanner, "settings", SimpleNamespace(
-        FOREX_PAIRS=["EURUSD", "GBPUSD"], LOWER_TIMEFRAME="M15",
-        PAIR_DELAY_SECONDS=5, MAX_CORRELATED_SIGNALS=1))
+        FOREX_PAIRS=["EURUSD", "GBPUSD"], PAIR_DELAY_SECONDS=5,
+        **{k: v for k, v in BASE_SETTINGS.items() if k != "PAIR_DELAY_SECONDS"}))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: ([], []))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     await scanner.scan_once()
     assert sleep_calls == [5, 5]
 
@@ -250,8 +253,6 @@ async def test_scan_once_lazily_constructs_signal_service(monkeypatch):
     monkeypatch.setattr(scanner, "logger", Mock())
     monkeypatch.setattr(scanner, "settings", SimpleNamespace(FOREX_PAIRS=["EURUSD"], **BASE_SETTINGS))
     monkeypatch.setattr(scanner.correlation_service, "filter", lambda candidates, maximum: ([], []))
-    monkeypatch.setattr(scanner, "signal_keys", InMemorySignalKeyRepository())
-    scanner.pending_notifications.clear()
     await scanner.scan_once()
     assert constructed == [True]
     scanner.signal_service = None  # restore module state for other tests

@@ -22,4 +22,10 @@ htmlcov/
 *.log
 logs/
 
+# Fase 4: base de datos SQLite local (y sus archivos auxiliares WAL/SHM)
+*.db
+*.db-wal
+*.db-shm
+data/
+
 .idea/
