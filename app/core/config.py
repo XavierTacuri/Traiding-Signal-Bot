@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import time
 from pathlib import Path
@@ -136,6 +137,36 @@ class Settings(BaseSettings):
     # encolan en el outbox.
     SIGNAL_RESULT_NOTIFICATIONS_ENABLED: bool = True
 
+    # ==============================
+    # Observabilidad, heartbeat y watchdog (Fase 5)
+    # ==============================
+    # Apaga heartbeat/watchdog/alertas/resumen diario. El logging base
+    # (consola + archivo) no depende de esta bandera.
+    MONITORING_ENABLED: bool = True
+    LOG_LEVEL: str = "INFO"
+    # ~LOG_MAX_BYTES * (LOG_BACKUP_COUNT + 1) en disco como máximo (5 MB x 6 = 30 MB por defecto).
+    LOG_MAX_BYTES: PositiveInt = 5_000_000
+    LOG_BACKUP_COUNT: PositiveInt = 5
+    # Cada cuánto el worker escribe su heartbeat (fila única, no un historial
+    # que crezca sin límite).
+    HEARTBEAT_INTERVAL_SECONDS: PositiveInt = 30
+    # El watchdog considera el heartbeat obsoleto más allá de este umbral.
+    HEARTBEAT_STALE_AFTER_SECONDS: PositiveInt = 180
+    WATCHDOG_CHECK_INTERVAL_SECONDS: PositiveInt = 60
+    # Tiempo tras arrancar el watchdog durante el cual la ausencia total de
+    # heartbeat no genera alerta (el worker puede seguir inicializando MT5).
+    WATCHDOG_STARTUP_GRACE_SECONDS: PositiveInt = 300
+    # Tiempo tras observar status=STOPPING durante el cual un heartbeat
+    # obsoleto se interpreta como apagado ordenado, no como caída.
+    WATCHDOG_SHUTDOWN_GRACE_SECONDS: PositiveInt = 60
+    ALERT_COOLDOWN_SECONDS: PositiveInt = 900
+    # Tope de recordatorios repetidos para un mismo incidente crítico
+    # prolongado; evita reintentos indefinidos de la misma alerta.
+    ALERT_MAX_REMINDERS: PositiveInt = 3
+    DAILY_SUMMARY_ENABLED: bool = False
+    DAILY_SUMMARY_TIME: time = time(7, 0)
+    DAILY_SUMMARY_TIMEZONE: str = "UTC"
+
     @field_validator("FOREX_PAIRS")
     @classmethod
     def validate_forex_pairs(cls, pairs: list[str]) -> list[str]:
@@ -149,7 +180,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Pares duplicados en FOREX_PAIRS: {', '.join(duplicates)}")
         return pairs
 
-    @field_validator("MT5_TIMEZONE", "SYSTEM_TIMEZONE", "TRADING_TIMEZONE")
+    @field_validator("MT5_TIMEZONE", "SYSTEM_TIMEZONE", "TRADING_TIMEZONE", "DAILY_SUMMARY_TIMEZONE")
     @classmethod
     def validate_timezone(cls, value: str) -> str:
         try:
@@ -157,6 +188,14 @@ class Settings(BaseSettings):
         except (KeyError, ValueError) as exc:
             raise ValueError(f"Zona horaria IANA inválida: {value}") from exc
         return value
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def validate_log_level(cls, value: str) -> str:
+        name = value.upper()
+        if name not in logging.getLevelNamesMapping():
+            raise ValueError(f"LOG_LEVEL inválido: {value}")
+        return name
 
     @model_validator(mode="after")
     def validate_strategy_shape(self) -> Settings:
@@ -180,6 +219,33 @@ class Settings(BaseSettings):
             raise ValueError(
                 "MT5_RECONNECT_MAX_DELAY_SECONDS no puede ser menor que "
                 "MT5_RECONNECT_INITIAL_DELAY_SECONDS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_monitoring_shape(self) -> Settings:
+        """Catches threshold combinations that would either do nothing or
+        generate false alerts during normal operation (brief section 15),
+        rather than letting an arbitrary-looking number pass silently."""
+        if self.HEARTBEAT_STALE_AFTER_SECONDS <= self.HEARTBEAT_INTERVAL_SECONDS:
+            raise ValueError(
+                "HEARTBEAT_STALE_AFTER_SECONDS debe ser mayor que HEARTBEAT_INTERVAL_SECONDS "
+                "(de lo contrario cada heartbeat normal parecería obsoleto)"
+            )
+        if self.WATCHDOG_CHECK_INTERVAL_SECONDS > self.HEARTBEAT_STALE_AFTER_SECONDS:
+            raise ValueError(
+                "WATCHDOG_CHECK_INTERVAL_SECONDS no puede ser mayor que "
+                "HEARTBEAT_STALE_AFTER_SECONDS (el watchdog debe revisar al menos una vez "
+                "dentro de cada ventana de obsolescencia)"
+            )
+        if self.WATCHDOG_STARTUP_GRACE_SECONDS < self.HEARTBEAT_STALE_AFTER_SECONDS:
+            raise ValueError(
+                "WATCHDOG_STARTUP_GRACE_SECONDS debe ser al menos HEARTBEAT_STALE_AFTER_SECONDS"
+            )
+        if self.ALERT_COOLDOWN_SECONDS < self.WATCHDOG_CHECK_INTERVAL_SECONDS:
+            raise ValueError(
+                "ALERT_COOLDOWN_SECONDS no puede ser menor que WATCHDOG_CHECK_INTERVAL_SECONDS "
+                "(de lo contrario cada revisión reenviaría la misma alerta)"
             )
         return self
 

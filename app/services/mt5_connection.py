@@ -109,6 +109,13 @@ class MT5ConnectionManager:
     def state(self) -> ConnectionState:
         return self._state
 
+    @property
+    def consecutive_failures(self) -> int:
+        """Read-only counter for observability (Fase 5 heartbeat); never
+        written to from outside this class, and reading it changes nothing
+        about reconnection behaviour."""
+        return self._consecutive_failures
+
     def _set_state(self, new_state: ConnectionState) -> None:
         if new_state == self._state:
             return

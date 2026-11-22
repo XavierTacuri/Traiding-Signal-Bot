@@ -9,6 +9,18 @@ class _NoOpConnection:
     async def ensure_connected(self) -> None:
         return None
 
+    async def run(self, func, *args, timeout=None, **kwargs):
+        # Deliberately never calls `func` — doing so would reach the real
+        # MetaTrader5 module, violating this stub's whole purpose. Raising
+        # here instead of leaving `run` undefined matters in practice:
+        # outside the Fase 3/4 weekend-close window, Fase 5's tracker (run
+        # as part of scanner.scan_once() whenever a signal was just
+        # registered) calls this to try activating it, and must see a
+        # plain, catchable "no connection" failure — the same shape
+        # MT5ConnectionManager itself raises when disconnected — not an
+        # AttributeError from a missing method.
+        raise RuntimeError("Sin conexión MT5 (stub de pruebas)")
+
 
 @pytest.fixture(autouse=True)
 def _fake_mt5_connection(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@ import sqlite3
 import pytest
 
 from app.repositories.database import Database, DatabaseError
+from app.repositories.migrations import SCHEMA_VERSION
 
 
 @pytest.mark.asyncio
@@ -16,7 +17,7 @@ async def test_initialize_creates_the_file_and_applies_migrations(tmp_path):
     path = tmp_path / "sub" / "signals.db"
     database = Database(path)
     version = await database.initialize()
-    assert version == 1
+    assert version == SCHEMA_VERSION
     assert path.exists()
     await database.close()
 
@@ -26,7 +27,7 @@ async def test_initialize_is_idempotent(tmp_path):
     database = Database(tmp_path / "signals.db")
     await database.initialize()
     second = await database.initialize()  # must not reopen or re-migrate destructively
-    assert second == 1
+    assert second == SCHEMA_VERSION
     await database.close()
 
 

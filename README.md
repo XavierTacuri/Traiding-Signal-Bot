@@ -69,6 +69,28 @@ Nuevas variables (`.env.example`): `DATABASE_PATH`, `SIGNAL_TRACKING_ENABLED`, `
 
 El bot sigue sin ejecutar operaciones: no usa `order_send` ni equivalentes, no abre ni administra posiciones reales. Todo resultado es una simulación basada en datos de mercado observados, no una garantía de rentabilidad.
 
+## Observabilidad, heartbeat y watchdog (Fase 5)
+
+El worker y un **watchdog independiente** (otro proceso) permiten detectar fallos operativos — bloqueos, caída de MT5, errores de SQLite, outbox estancado — sin alterar la generación de señales.
+
+- **Logging** (`app/core/logger.py`): consola sin cambios + un archivo rotativo opcional (`logs/trading_bot.log`, `RotatingFileHandler`, UTF-8, timestamps UTC, tope `LOG_MAX_BYTES × (LOG_BACKUP_COUNT + 1)` ≈ 30 MB por defecto). Un `Formatter` propio redacta cualquier token de Telegram (configurado o con forma de token) antes de escribir la línea, en consola y archivo. Las inicializaciones repetidas nunca duplican handlers. El watchdog usa su **propio archivo** (`logs/watchdog.log`): `RotatingFileHandler` no es segura entre procesos escribiendo el mismo archivo.
+- **Heartbeat** (`app/monitoring/heartbeat_service.py`, tabla `heartbeats`, fila única): cada `HEARTBEAT_INTERVAL_SECONDS` el worker registra su estado — `STARTING/HEALTHY/DEGRADED/STOPPING` —, el progreso real del scanner (último ciclo iniciado/finalizado/exitoso) y el estado de MT5/SQLite/outbox/tracker. El heartbeat *de vida* (que la tarea siga ejecutándose) y el *de progreso* (que `scan_once()` realmente termine) son señales distintas a propósito: si una llamada nativa a MT5 queda bloqueada (limitación de la Fase 3), el heartbeat sigue latiendo pero "último ciclo finalizado" deja de avanzar — eso es lo que el watchdog detecta. Que no haya señales BUY/SELL durante horas **no** se usa como indicio de fallo.
+- **Watchdog** (`python -m app.monitoring.watchdog`, opcionalmente `--once`): proceso separado, sin event loop propio, que **solo lee** la fila `heartbeats` (y escribe únicamente su propia tabla `alert_incidents`) — nunca llama a MT5 ni comparte la conexión del worker. Umbrales: `HEARTBEAT_STALE_AFTER_SECONDS` (heartbeat obsoleto), `WATCHDOG_STARTUP_GRACE_SECONDS` (tolera que MT5 siga inicializando), `WATCHDOG_SHUTDOWN_GRACE_SECONDS` (no confunde un apagado ordenado con una caída). No reinicia procesos todavía — eso queda para una fase posterior con un supervisor de Windows.
+- **Alertas por Telegram** (`app/monitoring/telegram_alert_sender.py` + `app/monitoring/alerts.py`): el watchdog envía con un cliente HTTP propio e independiente del `NotifierService`/outbox del worker — necesario porque un worker caído no puede avisar de su propia caída. Deduplicadas por incidente (`alert_incidents`): una alerta al detectar, silencio mientras persiste dentro del `ALERT_COOLDOWN_SECONDS`, como máximo `ALERT_MAX_REMINDERS` recordatorios para incidentes `CRITICAL` prolongados, y una única notificación `RECOVERY` al resolverse. Reiniciar el watchdog a mitad de un incidente no reenvía nada (el estado vive en SQLite, no en el proceso). No se garantiza entrega exactamente una vez.
+- **Resumen diario** (`app/monitoring/daily_summary.py`, `DAILY_SUMMARY_ENABLED`, desactivado por defecto): como mucho un mensaje por fecha UTC (`daily_summaries_sent`), enviado por el `NotifierService` del worker tras `DAILY_SUMMARY_TIME` en `DAILY_SUMMARY_TIMEZONE`. Solo reporta datos persistidos (ciclos, reconexiones, incidentes críticos, señales/resultados virtuales del día) — nunca inventa actividad en periodos sin observación.
+- **Métricas** (misma fila `heartbeats`): ciclos totales/fallidos, duración del último ciclo, fallos/reconexiones de MT5, errores de SQLite, outbox pendiente/fallido, eventos del tracker, señales generadas/rechazadas. Sin Prometheus/Grafana ni series de alta cardinalidad.
+
+Nuevas variables (`.env.example`): `MONITORING_ENABLED`, `LOG_LEVEL`, `LOG_MAX_BYTES`, `LOG_BACKUP_COUNT`, `HEARTBEAT_INTERVAL_SECONDS`, `HEARTBEAT_STALE_AFTER_SECONDS`, `WATCHDOG_CHECK_INTERVAL_SECONDS`, `WATCHDOG_STARTUP_GRACE_SECONDS`, `WATCHDOG_SHUTDOWN_GRACE_SECONDS`, `ALERT_COOLDOWN_SECONDS`, `ALERT_MAX_REMINDERS`, `DAILY_SUMMARY_ENABLED`, `DAILY_SUMMARY_TIME`, `DAILY_SUMMARY_TIMEZONE`. `Settings` valida que estos umbrales sean mutuamente coherentes (p. ej. el watchdog siempre revisa al menos una vez dentro de la ventana de obsolescencia del heartbeat) para no generar falsas alertas en operación normal.
+
+**Ejecución manual** (dos procesos independientes, igual en desarrollo que en un futuro VPS):
+
+```powershell
+python main.py                      # worker: escaneo, persistencia, tracker
+python -m app.monitoring.watchdog   # watchdog: supervisión externa (otra consola)
+```
+
+El watchdog no requiere MT5 instalado, cuenta de broker ni token real de Telegram para arrancar — solo lee el archivo SQLite que el worker ya mantiene. Instalarlos como servicios de Windows con reinicio automático (supervisor) queda para una fase posterior; hoy ambos se ejecutan manualmente.
+
 ## Configuración
 
 Todos los parámetros viven en `app/core/config.py` y pueden sobrescribirse con las variables descritas en `.env.example`, organizado por categorías (general, MetaTrader 5, Telegram, pares, temporalidades, indicadores, filtros de estrategia). Solicite al menos 250 barras H1; el valor por defecto es 300. No se incluyen ajustes arbitrarios por par.
@@ -178,7 +200,9 @@ Los resultados dependen de la calidad del histórico, spread, slippage omitido y
 - La correlación básica solo agrupa exposición USD equivalente; no estima correlaciones estadísticas móviles.
 - El backtester aporta el motor y métricas, pero requiere histórico de calidad y modelado realista de spread/slippage.
 - El proyecto es un worker de consola; pese al nombre histórico del repositorio, actualmente no expone endpoints FastAPI.
-- El seguimiento virtual depende de que MT5 entregue velas/cotizaciones; si no lo hace durante mucho tiempo, una señal activa puede quedar sin resolver indefinidamente (igual que un trade "OPEN" en el backtester). La recuperación ante un bloqueo nativo real de MT5 sigue dependiendo del watchdog externo planificado para una fase posterior — no implementado aún.
+- El seguimiento virtual depende de que MT5 entregue velas/cotizaciones; si no lo hace durante mucho tiempo, una señal activa puede quedar sin resolver indefinidamente (igual que un trade "OPEN" en el backtester).
 - SQLite se usa como base de datos local de un solo proceso; no sustituye a un sistema de respaldo ni está pensado para múltiples procesos escribiendo a la vez.
+- El watchdog (Fase 5) **detecta y alerta**; no reinicia procesos ni recupera un bloqueo nativo de MT5 por sí mismo — eso requiere un supervisor externo (Windows) planificado para una fase posterior. Tampoco se ha ejecutado en un VPS Windows real durante 24 horas: lo verificado hasta ahora son pruebas automatizadas con mocks y relojes controlados, no una operación continua real.
+- Las alertas por Telegram del watchdog son *al menos una vez*, no exactamente una vez: un fallo de red justo después de un envío exitoso puede repetir un mensaje (nunca una señal de trading).
 
 > Este software genera señales basadas en reglas técnicas. No garantiza resultados ni rentabilidad. Debe validarse mediante backtesting, pruebas fuera de muestra y cuenta demo antes de utilizarse en un entorno real.

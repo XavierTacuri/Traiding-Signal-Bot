@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: (
@@ -90,6 +90,72 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
             metadata TEXT
         )""",
         "CREATE INDEX IF NOT EXISTS idx_signal_events_signal_id ON signal_events(signal_id)",
+    ),
+    2: (
+        # Single-row table (id is always 1, enforced by CHECK): a current
+        # snapshot + cumulative counters, upserted in place — never a
+        # growing history, so this table's size never changes (Fase 5
+        # section 3/9: "evitar escrituras excesivas" / "mantener bajo el
+        # consumo de recursos"). Read-only for the external watchdog.
+        """CREATE TABLE IF NOT EXISTS heartbeats (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            instance_id TEXT NOT NULL,
+            recorded_at_utc TEXT NOT NULL,
+            status TEXT NOT NULL,
+            last_cycle_started_at_utc TEXT,
+            last_cycle_finished_at_utc TEXT,
+            last_cycle_succeeded_at_utc TEXT,
+            last_cycle_duration_seconds REAL,
+            scan_cycles_total INTEGER NOT NULL DEFAULT 0,
+            scan_cycles_failed INTEGER NOT NULL DEFAULT 0,
+            last_mt5_valid_read_at_utc TEXT,
+            mt5_connection_state TEXT,
+            mt5_consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            mt5_disconnected_seconds_total REAL NOT NULL DEFAULT 0,
+            sqlite_ok INTEGER NOT NULL DEFAULT 1,
+            sqlite_errors_total INTEGER NOT NULL DEFAULT 0,
+            outbox_pending_count INTEGER NOT NULL DEFAULT 0,
+            outbox_failed_count INTEGER NOT NULL DEFAULT 0,
+            outbox_notifications_failed_total INTEGER NOT NULL DEFAULT 0,
+            tracker_last_run_at_utc TEXT,
+            tracker_active_signals INTEGER NOT NULL DEFAULT 0,
+            tracker_events_total INTEGER NOT NULL DEFAULT 0,
+            signals_generated_total INTEGER NOT NULL DEFAULT 0,
+            signals_rejected_total INTEGER NOT NULL DEFAULT 0,
+            recent_error TEXT
+        )""",
+        # One row per UTC calendar date; used only by the daily summary
+        # (section 14) so "today's" cycle/reconnection counts don't require
+        # diffing the lifetime counters above.
+        """CREATE TABLE IF NOT EXISTS daily_stats (
+            date_utc TEXT PRIMARY KEY,
+            cycles_total INTEGER NOT NULL DEFAULT 0,
+            cycles_failed INTEGER NOT NULL DEFAULT 0,
+            mt5_reconnections INTEGER NOT NULL DEFAULT 0,
+            critical_incidents INTEGER NOT NULL DEFAULT 0
+        )""",
+        # Guarantees at most one daily summary is ever sent per UTC date
+        # (section 14's "clave única para no generar varios resúmenes
+        # equivalentes"), independent of how many times the check runs.
+        """CREATE TABLE IF NOT EXISTS daily_summaries_sent (
+            date_utc TEXT PRIMARY KEY,
+            sent_at_utc TEXT NOT NULL
+        )""",
+        # The watchdog's own incident bookkeeping (section 12): one row per
+        # distinct ongoing/resolved condition, deduplicated by incident_key.
+        """CREATE TABLE IF NOT EXISTS alert_incidents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_key TEXT NOT NULL UNIQUE,
+            component TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            first_detected_at_utc TEXT NOT NULL,
+            last_notified_at_utc TEXT,
+            notification_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            resolved_at_utc TEXT,
+            last_message TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_alert_incidents_status ON alert_incidents(status)",
     ),
 }
 
