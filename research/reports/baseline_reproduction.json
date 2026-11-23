@@ -1,0 +1,158 @@
+{
+  "period": {
+    "start": "2025-01-01T00:00:00+00:00",
+    "end": "2026-01-02T00:00:00+00:00"
+  },
+  "pairs": [
+    "EURUSD",
+    "USDJPY",
+    "USDCHF",
+    "AUDUSD",
+    "USDCAD",
+    "NZDUSD"
+  ],
+  "lower_bars_processed": 148567,
+  "higher_bars_processed": 37184,
+  "setups_detected": 2825,
+  "setups_confirmed": 58,
+  "setups_expired": 2762,
+  "rejected_trend": 44031,
+  "rejected_rsi": 2514,
+  "rejected_breakout": 203,
+  "rejected_candle": 2,
+  "rejected_extension": 2393,
+  "rejected_volatility": 0,
+  "rejected_spread": 5089,
+  "rejected_risk": 35,
+  "rejected_score": 0,
+  "rejected_correlation": 3,
+  "rejected_position_open": 2,
+  "rejected_aggregate_risk": 0,
+  "total_trades": 53,
+  "winners": 21,
+  "losers": 32,
+  "open": 0,
+  "win_rate": 0.39622641509433965,
+  "profit_factor": 1.31191377481875,
+  "expectancy_r": 0.18832529800377362,
+  "total_r": 9.981240794200001,
+  "average_r": 0.18832529800377362,
+  "max_drawdown_percent": 10.648543326228356,
+  "initial_balance": 10000.0,
+  "final_balance": 10987.31014376404,
+  "by_pair": {
+    "USDCAD": {
+      "trades": 13,
+      "wins": 4,
+      "losses": 9,
+      "open": 0,
+      "total_r": -0.9962383514999997,
+      "pnl": -105.69011577426232
+    },
+    "EURUSD": {
+      "trades": 11,
+      "wins": 4,
+      "losses": 7,
+      "open": 0,
+      "total_r": 1.0074609087000002,
+      "pnl": 88.33579521206613
+    },
+    "USDJPY": {
+      "trades": 21,
+      "wins": 9,
+      "losses": 12,
+      "open": 0,
+      "total_r": 6.0069119807,
+      "pnl": 612.871709478929
+    },
+    "AUDUSD": {
+      "trades": 4,
+      "wins": 2,
+      "losses": 2,
+      "open": 0,
+      "total_r": 1.9775990099,
+      "pnl": 207.8163892061064
+    },
+    "USDCHF": {
+      "trades": 3,
+      "wins": 2,
+      "losses": 1,
+      "open": 0,
+      "total_r": 2.9855072464,
+      "pnl": 283.5280890261314
+    },
+    "NZDUSD": {
+      "trades": 1,
+      "wins": 0,
+      "losses": 1,
+      "open": 0,
+      "total_r": -1.0,
+      "pnl": -99.55172338492521
+    }
+  },
+  "by_direction": {
+    "BUY": {
+      "trades": 22,
+      "wins": 10,
+      "losses": 12,
+      "open": 0,
+      "total_r": 8.0360731375,
+      "pnl": 795.3335135484947
+    },
+    "SELL": {
+      "trades": 31,
+      "wins": 11,
+      "losses": 20,
+      "open": 0,
+      "total_r": 1.9451676567000002,
+      "pnl": 191.97663021555067
+    }
+  },
+  "by_month": {
+    "2025-01": {
+      "trades": 4,
+      "total_r": 5.0164837632,
+      "pnl": 507.6571081953763
+    },
+    "2025-02": {
+      "trades": 5,
+      "total_r": 0.9866625838,
+      "pnl": 98.42608396367208
+    },
+    "2025-03": {
+      "trades": 4,
+      "total_r": -1.0,
+      "pnl": -109.18983858494124
+    },
+    "2025-04": {
+      "trades": 5,
+      "total_r": -5.0,
+      "pnl": -514.4522194636886
+    },
+    "2025-05": {
+      "trades": 4,
+      "total_r": -0.9946808511,
+      "pnl": -102.25422088065316
+    },
+    "2025-09": {
+      "trades": 8,
+      "total_r": -1.9918032787,
+      "pnl": -201.6085598816453
+    },
+    "2025-10": {
+      "trades": 10,
+      "total_r": 1.9815828402,
+      "pnl": 183.90876509968734
+    },
+    "2025-11": {
+      "trades": 8,
+      "total_r": 0.9980270283000001,
+      "pnl": 90.52494764629795
+    },
+    "2025-12": {
+      "trades": 5,
+      "total_r": 9.9849687085,
+      "pnl": 1034.29807766994
+    }
+  }
+}
