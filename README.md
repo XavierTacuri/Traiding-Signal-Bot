@@ -195,6 +195,10 @@ Si SL y TP aparecen dentro de la misma M15 no se conoce el orden intrabar sin da
 
 Los resultados dependen de la calidad del histórico, spread, slippage omitido y supuestos intrabar. Un backtest favorable no garantiza rendimiento futuro y debe complementarse con pruebas fuera de muestra y cuenta demo.
 
+## Validación estadística (Fase 6)
+
+`research/` contiene herramientas de investigación (reproducción del baseline, separación in-sample/out-of-sample, walk-forward de parámetros fijos, bootstrap por bloques, diagnóstico del score) que reutilizan el motor de `backtesting/` sin modificarlo. Son estudios manuales, no se ejecutan en CI. Ver `research/README.md` para el detalle, el origen de los datos históricos usados y sus limitaciones.
+
 ## Limitaciones y advertencia
 
 - La correlación básica solo agrupa exposición USD equivalente; no estima correlaciones estadísticas móviles.
